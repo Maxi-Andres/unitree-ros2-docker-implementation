@@ -1,0 +1,68 @@
+# =============================================================================
+# Visualizacion del Unitree G1 en ESTA PC (x86_64 + ROS 2 Humble en Docker).
+#
+# Reparto: el robot solo publica 'lf/lowstate' por DDS. Esta PC corre el bridge
+# (lowstate -> /joint_states), el robot_state_publisher (URDF -> /tf) y RViz
+# (render con la GPU NVIDIA). Asi el robot queda libre para su control.
+#
+# Interfaz de red al robot: exporta ROBOT_IFACE con el nombre de tu interfaz
+# (mira 'ip a' al conectar el robot, p.ej. enp3s0). Por defecto usa eth0.
+#   export ROBOT_IFACE=enp3s0
+# Los Unitree usan la subred 192.168.123.0/24.
+# =============================================================================
+
+services:
+
+  lowstate_bridge:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: g1_description:humble-amd64
+    container_name: lowstate_bridge
+    privileged: true
+    network_mode: host
+    restart: always
+    entrypoint: /ros_entrypoint.sh
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="${ROBOT_IFACE:-eth0}" priority="default" multicast="default"/></Interfaces></General></Domain></CycloneDDS>
+    volumes:
+      # Bind-mount del bridge: editas el .py local y reinicias el servicio,
+      # sin reconstruir la imagen.
+      - ../g1_description/g1_description/lowstate_jointstate_bridge.py:/ros2_ws/install/g1_description/lib/python3.10/site-packages/g1_description/lowstate_jointstate_bridge.py
+    command: ["/bin/bash", "-lc", "source /ros2_ws/install/setup.bash && source /unitree_ros2/cyclonedds_ws/install/setup.bash && ros2 run g1_description lowstate_jointstate_bridge"]
+
+  robot_state_publisher:
+    image: g1_description:humble-amd64
+    container_name: robot_state_publisher
+    privileged: true
+    network_mode: host
+    restart: always
+    entrypoint: /ros_entrypoint.sh
+    depends_on:
+      - lowstate_bridge
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="${ROBOT_IFACE:-eth0}" priority="default" multicast="default"/></Interfaces></General></Domain></CycloneDDS>
+    command: ["/bin/bash", "-lc", "source /ros2_ws/install/setup.bash && source /unitree_ros2/cyclonedds_ws/install/setup.bash && ros2 launch g1_description robot_state_publisher.launch.py network_interface:=${ROBOT_IFACE:-eth0}"]
+
+  rviz:
+    image: osrf/ros:humble-desktop-full
+    container_name: rviz
+    network_mode: host
+    runtime: nvidia
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - CYCLONEDDS_URI=<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="${ROBOT_IFACE:-eth0}" priority="default" multicast="default"/></Interfaces></General></Domain></CycloneDDS>
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${XAUTHORITY:-$HOME/.Xauthority}:/root/.Xauthority:ro
+    command: >
+      bash -c "apt-get update &&
+      apt-get install -y ros-humble-rmw-cyclonedds-cpp &&
+      source /opt/ros/humble/setup.bash &&
+      rviz2"
